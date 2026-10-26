@@ -1,4 +1,4 @@
-from io import StringIO
+import io
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -8,9 +8,9 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 
-# ---------------------------------------------------------
-# PAGE CONFIGURATION
-# ---------------------------------------------------------
+# ============================================================
+# PAGE SETUP
+# ============================================================
 
 st.set_page_config(
     page_title="Real Exchange Rate Explorer",
@@ -22,19 +22,19 @@ IMF_API_BASE = "https://api.imf.org/external/sdmx/3.0"
 EARLIEST_MONTH = "1976-01"
 REQUEST_TIMEOUT = 60
 
-HEADERS = {
+REQUEST_HEADERS = {
     "Accept": "text/csv",
     "User-Agent": "real-exchange-rate-app/1.0",
 }
 
 
 class IMFDataError(Exception):
-    """Custom error for IMF download and parsing problems."""
+    """Error raised when IMF data cannot be downloaded or processed."""
 
 
-# ---------------------------------------------------------
-# COUNTRY AND CURRENCY LISTS
-# ---------------------------------------------------------
+# ============================================================
+# ECONOMY AND CURRENCY LISTS
+# ============================================================
 
 CURRENCY_CODES = {
     "ARG": "ARS",
@@ -111,26 +111,26 @@ def build_economy_list():
     economies["United States"] = "USA"
     economies["Euro area"] = "G163"
 
-    return dict(sorted(economies.items(), key=lambda item: item[0]))
+    return dict(sorted(economies.items()))
 
 
 ECONOMIES = build_economy_list()
 ECONOMY_NAMES = list(ECONOMIES.keys())
 
 
-# ---------------------------------------------------------
+# ============================================================
 # IMF DATA FUNCTIONS
-# ---------------------------------------------------------
+# ============================================================
 
 def find_column(columns, possible_names):
-    normalized_columns = {
+    normalized = {
         str(column).strip().upper(): column
         for column in columns
     }
 
-    for possible_name in possible_names:
-        if possible_name.upper() in normalized_columns:
-            return normalized_columns[possible_name.upper()]
+    for name in possible_names:
+        if name.upper() in normalized:
+            return normalized[name.upper()]
 
     return None
 
@@ -144,11 +144,11 @@ def build_imf_url(dataflow, key):
 
 def parse_imf_csv(response_text, description):
     try:
-        data = pd.read_csv(StringIO(response_text))
+        data = pd.read_csv(io.StringIO(response_text))
     except Exception as exc:
         raise IMFDataError(
-            f"The IMF response for {description} could not be read as CSV. "
-            f"Technical detail: {exc}"
+            f"The IMF response for {description} could not be read "
+            f"as CSV. Technical detail: {exc}"
         ) from exc
 
     if data.empty:
@@ -167,15 +167,17 @@ def parse_imf_csv(response_text, description):
     )
 
     if time_column is None or value_column is None:
-        received_columns = ", ".join(str(column) for column in data.columns)
+        received_columns = ", ".join(
+            str(column) for column in data.columns
+        )
 
         raise IMFDataError(
-            f"The IMF response for {description} did not contain the "
-            f"expected time and value columns. Received columns: "
+            f"The IMF response for {description} did not contain "
+            f"recognized time and value columns. Received columns: "
             f"{received_columns}"
         )
 
-    parsed = data[[time_column, value_column]].copy()
+    parsed = data.loc[:, [time_column, value_column]].copy()
     parsed.columns = ["Date", "Value"]
 
     parsed["Date"] = pd.to_datetime(
@@ -190,8 +192,11 @@ def parse_imf_csv(response_text, description):
     )
 
     parsed = parsed.dropna(subset=["Date", "Value"])
-    parsed = parsed[parsed["Value"] > 0]
-    parsed = parsed.drop_duplicates(subset=["Date"], keep="last")
+    parsed = parsed.loc[parsed["Value"] > 0]
+    parsed = parsed.drop_duplicates(
+        subset=["Date"],
+        keep="last",
+    )
     parsed = parsed.sort_values("Date")
 
     if parsed.empty:
@@ -206,20 +211,21 @@ def parse_imf_csv(response_text, description):
 def fetch_imf_series(dataflow, key, description):
     url = build_imf_url(dataflow, key)
 
-    params = {
+    parameters = {
         "c[TIME_PERIOD]": f"ge:{EARLIEST_MONTH}",
     }
 
     try:
         response = requests.get(
             url,
-            params=params,
-            headers=HEADERS,
+            params=parameters,
+            headers=REQUEST_HEADERS,
             timeout=REQUEST_TIMEOUT,
         )
     except requests.Timeout as exc:
         raise IMFDataError(
-            f"The IMF request timed out for {description}. Please try again."
+            f"The IMF request timed out for {description}. "
+            f"Please try again."
         ) from exc
     except requests.RequestException as exc:
         raise IMFDataError(
@@ -228,22 +234,32 @@ def fetch_imf_series(dataflow, key, description):
         ) from exc
 
     if response.status_code != 200:
-        response_preview = response.text[:300].replace("\n", " ")
+        response_preview = response.text[:300].replace(
+            "\n",
+            " ",
+        )
 
         raise IMFDataError(
             f"The IMF returned HTTP {response.status_code} for "
             f"{description}. IMF response: {response_preview}"
         )
 
-    content_type = response.headers.get("Content-Type", "").lower()
+    content_type = response.headers.get(
+        "Content-Type",
+        "",
+    ).lower()
 
     if "html" in content_type:
         raise IMFDataError(
             f"The IMF returned a web page instead of data for "
-            f"{description}. The IMF service may be temporarily unavailable."
+            f"{description}. The IMF service may be temporarily "
+            f"unavailable."
         )
 
-    return parse_imf_csv(response.text, description)
+    return parse_imf_csv(
+        response.text,
+        description,
+    )
 
 
 def get_cpi(country_code, country_name):
@@ -256,7 +272,7 @@ def get_cpi(country_code, country_name):
     )
 
 
-def get_fx(country_code, country_name):
+def get_exchange_rate(country_code, country_name):
     if country_code == "USA":
         return None
 
@@ -271,9 +287,9 @@ def get_fx(country_code, country_name):
     )
 
 
-# ---------------------------------------------------------
+# ============================================================
 # CALCULATION FUNCTIONS
-# ---------------------------------------------------------
+# ============================================================
 
 def combine_input_series(
     country1_name,
@@ -281,11 +297,25 @@ def combine_input_series(
     country2_name,
     country2_code,
 ):
-    p1 = get_cpi(country1_code, country1_name).rename("P1")
-    p2 = get_cpi(country2_code, country2_name).rename("P2")
+    p1 = get_cpi(
+        country1_code,
+        country1_name,
+    ).rename("P1")
 
-    fx1 = get_fx(country1_code, country1_name)
-    fx2 = get_fx(country2_code, country2_name)
+    p2 = get_cpi(
+        country2_code,
+        country2_name,
+    ).rename("P2")
+
+    fx1 = get_exchange_rate(
+        country1_code,
+        country1_name,
+    )
+
+    fx2 = get_exchange_rate(
+        country2_code,
+        country2_name,
+    )
 
     series_to_join = [p1, p2]
 
@@ -299,7 +329,9 @@ def combine_input_series(
         series_to_join,
         axis=1,
         join="outer",
-    ).sort_index()
+    )
+
+    combined = combined.sort_index()
 
     if country1_code == "USA":
         combined["FX1"] = 1.0
@@ -307,14 +339,24 @@ def combine_input_series(
     if country2_code == "USA":
         combined["FX2"] = 1.0
 
-    required_columns = ["P1", "P2", "FX1", "FX2"]
+    required_columns = [
+        "P1",
+        "P2",
+        "FX1",
+        "FX2",
+    ]
 
     for column in required_columns:
         if column not in combined.columns:
             combined[column] = pd.NA
 
-    combined = combined[required_columns]
-    combined = combined.apply(pd.to_numeric, errors="coerce")
+    combined = combined.loc[:, required_columns]
+
+    for column in required_columns:
+        combined[column] = pd.to_numeric(
+            combined[column],
+            errors="coerce",
+        )
 
     valid_rows = (
         combined["P1"].gt(0)
@@ -327,14 +369,15 @@ def combine_input_series(
 
     if combined.empty:
         raise IMFDataError(
-            "The selected economies do not have overlapping valid monthly "
-            "CPI and exchange-rate observations."
+            "The selected economies do not have overlapping valid "
+            "monthly CPI and exchange-rate observations."
         )
 
-    # Country 2 currency per one unit of Country 1 currency.
-    combined["S"] = combined["FX2"] / combined["FX1"]
+    combined["S"] = (
+        combined["FX2"]
+        / combined["FX1"]
+    )
 
-    # Real exchange rate.
     combined["RER"] = (
         combined["S"]
         * combined["P1"]
@@ -359,13 +402,20 @@ def calculate_selected_sample(
     ].copy()
 
     sample = sample.dropna(
-        subset=["P1", "P2", "FX1", "FX2", "S", "RER"]
+        subset=[
+            "P1",
+            "P2",
+            "FX1",
+            "FX2",
+            "S",
+            "RER",
+        ]
     )
 
     if sample.empty:
         raise IMFDataError(
-            "No complete observations are available inside the selected "
-            "sample period."
+            "No complete observations are available inside the "
+            "selected sample period."
         )
 
     rer_star = sample["RER"].mean()
@@ -376,29 +426,55 @@ def calculate_selected_sample(
         )
 
     sample["RER_star"] = rer_star
+
     sample["Real_Index"] = (
-        100.0 * sample["RER"] / sample["RER_star"]
+        100.0
+        * sample["RER"]
+        / sample["RER_star"]
     )
 
-    sample.insert(0, "Country_2_IMF_Code", country2_code)
-    sample.insert(0, "Country_1_IMF_Code", country1_code)
-    sample.insert(0, "Country_2", country2_name)
-    sample.insert(0, "Country_1", country1_name)
+    sample.insert(
+        0,
+        "Country_2_IMF_Code",
+        country2_code,
+    )
+
+    sample.insert(
+        0,
+        "Country_1_IMF_Code",
+        country1_code,
+    )
+
+    sample.insert(
+        0,
+        "Country_2",
+        country2_name,
+    )
+
+    sample.insert(
+        0,
+        "Country_1",
+        country1_name,
+    )
 
     sample.index.name = "Date"
 
     return sample
 
 
-def month_label(timestamp):
+def format_month(timestamp):
     return timestamp.strftime("%B %Y")
 
 
-# ---------------------------------------------------------
+# ============================================================
 # CHART FUNCTION
-# ---------------------------------------------------------
+# ============================================================
 
-def make_chart(sample, chart_choice, nominal_axis_label):
+def make_chart(
+    sample,
+    chart_choice,
+    nominal_axis_label,
+):
     if chart_choice == "Both":
         figure = make_subplots(
             specs=[[{"secondary_y": True}]]
@@ -543,15 +619,15 @@ def make_chart(sample, chart_choice, nominal_axis_label):
     return figure
 
 
-# ---------------------------------------------------------
-# APPLICATION
-# ---------------------------------------------------------
+# ============================================================
+# APPLICATION HEADER
+# ============================================================
 
 st.title("🌍 Real Exchange Rate Explorer")
 
 st.write(
-    "Compare the nominal and CPI-adjusted real exchange rate between "
-    "two economies using monthly IMF data."
+    "Compare the nominal and CPI-adjusted real exchange rate "
+    "between two economies using monthly IMF data."
 )
 
 with st.expander(
@@ -583,32 +659,38 @@ Country 1 currency.
 
 **Real Index(t) = 100 × RER(t) / RER***
 
-The application recalculates RER* every time the selected countries
-or dates change. The nominal exchange rate is not normalized.
+The application recalculates RER* whenever the countries or dates
+change. The nominal exchange rate is displayed in actual currency
+units and is not normalized.
 """
     )
 
 
-# ---------------------------------------------------------
+# ============================================================
 # COUNTRY SELECTION
-# ---------------------------------------------------------
+# ============================================================
 
-country_columns = st.columns(2)
+country1_column, country2_column = st.columns(2)
 
-default_country1_index = ECONOMY_NAMES.index("United Kingdom")
-default_country2_index = ECONOMY_NAMES.index("United States")
+default_country1 = ECONOMY_NAMES.index(
+    "United Kingdom"
+)
 
-with country_columnscountry1_name = st.selectbox(
-        "Country 1",
-        options=ECONOMY_NAMES,
-        index=default_country1_index,
-    )
+default_country2 = ECONOMY_NAMES.index(
+    "United States"
+)
 
-with country_columnscountry2_name = st.selectbox(
-        "Country 2",
-        options=ECONOMY_NAMES,
-        index=default_country2_index,
-    )
+country1_name = country1_column.selectbox(
+    "Country 1",
+    options=ECONOMY_NAMES,
+    index=default_country1,
+)
+
+country2_name = country2_column.selectbox(
+    "Country 2",
+    options=ECONOMY_NAMES,
+    index=default_country2,
+)
 
 country1_code = ECONOMIES[country1_name]
 country2_code = ECONOMIES[country2_name]
@@ -627,22 +709,24 @@ nominal_axis_label = f"{currency2} per {currency1}"
 
 st.info(
     f"Selected direction: **{nominal_axis_label}**. "
-    f"This means units of {country2_name} currency per one unit of "
-    f"{country1_name} currency."
+    f"This means units of {country2_name} currency per one unit "
+    f"of {country1_name} currency."
 )
 
 if country1_code == country2_code:
     st.warning(
-        "You selected the same economy twice. The nominal exchange rate "
-        "will equal 1 where the underlying data are valid."
+        "You selected the same economy twice. The nominal exchange "
+        "rate will equal 1 where data are valid."
     )
 
 
-# ---------------------------------------------------------
-# DOWNLOAD AND ALIGN IMF DATA
-# ---------------------------------------------------------
+# ============================================================
+# DOWNLOAD IMF DATA
+# ============================================================
 
-with st.spinner("Downloading and aligning IMF data..."):
+with st.spinner(
+    "Downloading and aligning IMF data..."
+):
     try:
         full_data = combine_input_series(
             country1_name=country1_name,
@@ -653,14 +737,15 @@ with st.spinner("Downloading and aligning IMF data..."):
     except IMFDataError as exc:
         st.error(str(exc))
         st.info(
-            "IMF coverage varies by country. Try another country pair or "
-            "try again if the IMF service is temporarily unavailable."
+            "IMF data coverage varies by economy. Try another "
+            "country pair, or try again if the IMF service is "
+            "temporarily unavailable."
         )
         st.stop()
     except Exception as exc:
         st.error(
-            "An unexpected error occurred while preparing the IMF data. "
-            f"Technical detail: {exc}"
+            "An unexpected error occurred while preparing the IMF "
+            f"data. Technical detail: {exc}"
         )
         st.stop()
 
@@ -679,8 +764,8 @@ maximum_month = (
 
 st.caption(
     f"Complete overlapping observations are available from "
-    f"**{month_label(minimum_month)}** through "
-    f"**{month_label(maximum_month)}**."
+    f"**{format_month(minimum_month)}** through "
+    f"**{format_month(maximum_month)}**."
 )
 
 default_start = max(
@@ -692,31 +777,34 @@ if default_start > maximum_month:
     default_start = minimum_month
 
 
-# ---------------------------------------------------------
-# DATE AND CHART SELECTION
-# ---------------------------------------------------------
+# ============================================================
+# DATE AND CHART CONTROLS
+# ============================================================
 
-date_columns = st.columns(3)
+start_column, end_column, chart_column = st.columns(3)
 
-with date_columnsstart_date = st.date_input(
-        "Start month",
-        value=default_start.date(),
-        min_value=minimum_month.date(),
-        max_value=maximum_month.date(),
-    )
+start_date = start_column.date_input(
+    "Start month",
+    value=default_start.date(),
+    min_value=minimum_month.date(),
+    max_value=maximum_month.date(),
+)
 
-with date_columnsend_date = st.date_input(
-        "End month",
-        value=maximum_month.date(),
-        min_value=minimum_month.date(),
-        max_value=maximum_month.date(),
-    )
+end_date = end_column.date_input(
+    "End month",
+    value=maximum_month.date(),
+    min_value=minimum_month.date(),
+    max_value=maximum_month.date(),
+)
 
-with date_columnschart_choice = st.radio(
-        "Chart",
-        options=["Real", "Nominal", "Both"],
-        horizontal=True,
-    )
+chart_choice = chart_column.radio(
+    "Chart",
+    options=[
+        "Real",
+        "Nominal",
+        "Both",
+    ],
+)
 
 start_month = (
     pd.Timestamp(start_date)
@@ -732,14 +820,15 @@ end_month = (
 
 if start_month > end_month:
     st.error(
-        "The start month must be earlier than or equal to the end month."
+        "The start month must be earlier than or equal to the "
+        "end month."
     )
     st.stop()
 
 
-# ---------------------------------------------------------
+# ============================================================
 # SELECTED-SAMPLE CALCULATIONS
-# ---------------------------------------------------------
+# ============================================================
 
 try:
     sample = calculate_selected_sample(
@@ -758,32 +847,32 @@ except IMFDataError as exc:
 rer_star = sample["RER_star"].iloc[0]
 real_index_average = sample["Real_Index"].mean()
 
-metric_columns = st.columns(4)
+months_metric, rer_metric, index_metric, nominal_metric = st.columns(4)
 
-with metric_columnsst.metric(
-        "Valid months",
-        f"{len(sample):,}",
-    )
+months_metric.metric(
+    "Valid months",
+    f"{len(sample):,}",
+)
 
-with metric_columnsst.metric(
-        "RER*",
-        f"{rer_star:.6f}",
-    )
+rer_metric.metric(
+    "RER*",
+    f"{rer_star:.6f}",
+)
 
-with metric_columnsst.metric(
-        "Average Real Index",
-        f"{real_index_average:.6f}",
-    )
+index_metric.metric(
+    "Average Real Index",
+    f"{real_index_average:.6f}",
+)
 
-with metric_columnsst.metric(
-        "Latest nominal S(t)",
-        f"{sample['S'].iloc[-1]:.6f}",
-    )
+nominal_metric.metric(
+    "Latest nominal S(t)",
+    f"{sample['S'].iloc[-1]:.6f}",
+)
 
 
-# ---------------------------------------------------------
+# ============================================================
 # CHART
-# ---------------------------------------------------------
+# ============================================================
 
 figure = make_chart(
     sample=sample,
@@ -803,18 +892,20 @@ if abs(real_index_average - 100.0) < 0.000001:
     )
 else:
     st.warning(
-        "The Real Index differs slightly from 100 because of numerical "
-        "rounding."
+        "The Real Index differs slightly from 100 because of "
+        "floating-point rounding."
     )
 
 
-# ---------------------------------------------------------
+# ============================================================
 # CSV EXPORT
-# ---------------------------------------------------------
+# ============================================================
 
 export_data = sample.reset_index().copy()
 
-export_data["Date"] = export_data["Date"].dt.strftime("%Y-%m")
+export_data["Date"] = export_data["Date"].dt.strftime(
+    "%Y-%m"
+)
 
 export_columns = [
     "Date",
@@ -832,30 +923,32 @@ export_columns = [
     "Real_Index",
 ]
 
-export_data = export_data[export_columns]
+export_data = export_data.loc[:, export_columns]
 
 csv_data = export_data.to_csv(
     index=False,
     float_format="%.12f",
 ).encode("utf-8")
 
+download_filename = (
+    f"real_exchange_rate_"
+    f"{country1_code.lower()}_"
+    f"{country2_code.lower()}_"
+    f"{start_month:%Y-%m}_"
+    f"{end_month:%Y-%m}.csv"
+)
+
 st.download_button(
     label="Download selected sample as CSV",
     data=csv_data,
-    file_name=(
-        f"real_exchange_rate_"
-        f"{country1_code.lower()}_"
-        f"{country2_code.lower()}_"
-        f"{start_month:%Y-%m}_"
-        f"{end_month:%Y-%m}.csv"
-    ),
+    file_name=download_filename,
     mime="text/csv",
 )
 
 
-# ---------------------------------------------------------
+# ============================================================
 # DATA PREVIEW
-# ---------------------------------------------------------
+# ============================================================
 
 st.subheader("Selected-sample data preview")
 
@@ -872,8 +965,9 @@ numeric_columns = [
     "Real_Index",
 ]
 
-display_data[numeric_columns] = (
-    display_data[numeric_columns].round(6)
+display_data.loc[:, numeric_columns] = (
+    display_data.loc[:, numeric_columns]
+    .round(6)
 )
 
 st.dataframe(
@@ -883,9 +977,9 @@ st.dataframe(
 )
 
 
-# ---------------------------------------------------------
+# ============================================================
 # MANUAL VERIFICATION
-# ---------------------------------------------------------
+# ============================================================
 
 st.subheader("Manual RER verification")
 
@@ -936,7 +1030,7 @@ Difference = {manual_rer - verification_row['RER']:.12f}
 st.code(verification_text)
 
 st.caption(
-    "Source: IMF SDMX 3.0 API. Data coverage varies by country and "
-    "series. Months missing any required CPI or exchange-rate input are "
-    "excluded from the calculations."
+    "Source: IMF SDMX 3.0 API. Data coverage varies by economy and "
+    "series. Months missing any required CPI or exchange-rate input "
+    "are excluded from the calculations."
 )
